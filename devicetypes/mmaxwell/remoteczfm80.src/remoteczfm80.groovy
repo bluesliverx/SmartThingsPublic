@@ -38,12 +38,12 @@ metadata {
 	}
 
 	// tile definitions
-	tiles() {
-		standardTile("switch", "device.switch", width: 2, height: 2, canChangeIcon: true) {
+	tiles(scale: 2) {
+		standardTile("switch", "device.switch", width: 6, height: 4, canChangeIcon: true, decoration: "flat") {
 			state "on", label: '${name}', action: "switch.off", icon: "st.switches.switch.on", backgroundColor: "#79b821"
 			state "off", label: '${name}', action: "switch.on", icon: "st.switches.switch.off", backgroundColor: "#ffffff"
 		}
-		standardTile("refresh", "device.switch", inactiveLabel: false, decoration: "flat") {
+		standardTile("refresh", "device.switch", inactiveLabel: false, decoration: "flat", width: 3, height: 4) {
 			state "default", label:'', action:"refresh.refresh", icon:"st.secondary.refresh"
 		}
 
