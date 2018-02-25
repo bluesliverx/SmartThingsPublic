@@ -32,7 +32,7 @@ definition(
 preferences {
 	section("About") {
 		paragraph "${get_APP_NAME()}, the smartapp that generates daily runtime reports about your ecobee components"
-		paragraph "Version 2.4.5" 
+		paragraph "Version 2.5.1" 
 		paragraph "If you like this smartapp, please support the developer via PayPal and click on the Paypal link below " 
 			href url: "https://www.paypal.me/ecomatiqhomes",
 				title:"Paypal donation..."
@@ -67,6 +67,9 @@ preferences {
 	section("Enable Amazon Echo/Ask Alexa Notifications [optional, default=false]") {
 		input (name:"askAlexaFlag", title: "Ask Alexa verbal Notifications?", type:"bool",
 			description:"optional",required:false)
+		input (name:"listOfMQs",  type:"enum", title: "List of the Ask Alexa Message Queues (default=Primary)", options: state?.askAlexaMQ, multiple: true, required: false,
+			description:"optional")            
+		input "AskAlexaExpiresInDays", "number", title: "Ask Alexa's messages expiration in days (default=2 days)?", required: false
 	}
     
     
@@ -100,10 +103,19 @@ def initialize() {
 	subscribe(location, "sunset", rescheduleIfNeeded)
 	subscribe(location, "mode", rescheduleIfNeeded)
 	subscribe(location, "sunsetTime", rescheduleIfNeeded)
-
+	subscribe(location, "askAlexaMQ", askAlexaMQHandler)
 	rescheduleIfNeeded()   
 }
 
+def askAlexaMQHandler(evt) {
+	if (!evt) return
+	switch (evt.value) {
+		case "refresh":
+		state?.askAlexaMQ = evt.jsonData && evt.jsonData?.queues ? evt.jsonData.queues : []
+		log.info("askAlexaMQHandler>refresh value=$state?.askAlexaMQ")        
+		break
+	}
+}
 
 def rescheduleIfNeeded(evt) {
 	if (evt) log.debug("rescheduleIfNeeded>$evt.name=$evt.value")
@@ -312,14 +324,14 @@ void generateStats() {
 		generateRuntimeReport(component,startDate, endDate)
 		runtimeTotalDaily = (ecobee.currentAuxHeat1RuntimeDaily) ? ecobee.currentAuxHeat1RuntimeDaily.toFloat().round(2):0
 		if (runtimeTotalDaily) {
-			send "${ecobee} ${component}'s runtime stats=${runtimeTotalDaily} minutes for ${String.format('%tF', startDate)}", settings.askAlexaFlag
+			send "On ${String.format('%tF', startDate)}, ${ecobee} ${component}'s runtime stats=${runtimeTotalDaily} minutes", settings.askAlexaFlag
 		}     
     
 		generateRuntimeReport(component,yesterday, startDate,'yesterday') // generate stats for yesterday
 		runtimeTotalYesterday = (ecobee.currentAuxHeat1RuntimeYesterday)? ecobee.currentAuxHeat1RuntimeYesterday.toFloat().round(2):0
 		atomicState?.componentAlreadyProcessed=component
-		if (detailedNotif ) {
-			send "${ecobee} ${component}'s runtime stats for the day before=${runtimeTotalYesterday} minutes for ${String.format('%tF', yesterday)}"
+		if (detailedNotif && runtimeTotalYesterday) {
+			send "And, on ${String.format('%tF', yesterday)}, ${ecobee} ${component}'s runtime stats for the day before=${runtimeTotalYesterday} minutes"
 		}     
 	}     
 	
@@ -333,13 +345,13 @@ void generateStats() {
 		generateRuntimeReport(component,startDate, endDate)
 		runtimeTotalDaily = (ecobee.currentAuxHeat2RuntimeDaily)? ecobee.currentAuxHeat2RuntimeDaily.toFloat().round(2):0
 		if (runtimeTotalDaily) {
-			send "${ecobee} ${component}'s runtime stats=${runtimeTotalDaily} minutes for ${String.format('%tF', startDate)}", settings.askAlexaFlag
+			send "On  ${String.format('%tF', startDate)}, ${ecobee} ${component}'s runtime stats=${runtimeTotalDaily} minutes", settings.askAlexaFlag
 		}     
 		generateRuntimeReport(component,yesterday, startDate,'yesterday') // generate stats for yesterday
 		runtimeTotalYesterday = (ecobee.currentAuxHeat2RuntimeYesterday)? ecobee.currentAuxHeat2RuntimeYesterday.toFloat().round(2):0
 		atomicState?.componentAlreadyProcessed=component
-		if (detailedNotif ) {
-			send "${ecobee} ${component}'s runtime stats for the day before=${runtimeTotalYesterday} minutes for ${String.format('%tF', yesterday)}"
+		if (detailedNotif && runtimeTotalYesterday) {
+			send "And, on ${String.format('%tF', yesterday)}, ${ecobee} ${component}'s runtime stats for the day before=${runtimeTotalYesterday} minutes"
 		}     
 	}     
 
@@ -351,12 +363,12 @@ void generateStats() {
 		generateRuntimeReport(component,startDate, endDate)
 		runtimeTotalDaily = (ecobee.currentAuxHeat3RuntimeDaily)? ecobee.currentAuxHeat3RuntimeDaily.toFloat().round(2):0
 		if (runtimeTotalDaily) {
-			send "${ecobee} ${component}'s runtime stats=${runtimeTotalDaily} minutes for ${String.format('%tF', startDate)}", settings.askAlexaFlag
+			send "On ${String.format('%tF', startDate)},${ecobee} ${component}'s runtime stats=${runtimeTotalDaily} minutes", settings.askAlexaFlag
 		}     
 		generateRuntimeReport(component,yesterday, startDate,'yesterday') // generate stats for yesterday
 		runtimeTotalYesterday = (ecobee.currentAuxHeat3RuntimeYesterday)? ecobee.currentAuxHeat3RuntimeYesterday.toFloat().round(2):0
-		if (detailedNotif ) {
-			send "${ecobee} ${component}'s runtime stats for the day before=${runtimeTotalYesterday} minutes for ${String.format('%tF', yesterday)}"
+		if (detailedNotif && runtimeTotalYesterday) {
+			send "And, on ${String.format('%tF', yesterday)}, ${ecobee} ${component}'s runtime stats for the day before=${runtimeTotalYesterday} minutes"
 		}     
 	}     
 
@@ -369,13 +381,13 @@ void generateStats() {
 		generateRuntimeReport(component,startDate, endDate)
 		runtimeTotalDaily = (ecobee.currentCompCool1RuntimeDaily)? ecobee.currentCompCool1RuntimeDaily.toFloat().round(2):0
 		if (runtimeTotalDaily) {
-			send "${ecobee} ${component}'s runtime stats=${runtimeTotalDaily} minutes for ${String.format('%tF', startDate)}", settings.askAlexaFlag
+			send "On ${String.format('%tF', startDate)}, ${ecobee} ${component}'s runtime stats=${runtimeTotalDaily} minutes", settings.askAlexaFlag
 		}     
 		generateRuntimeReport(component,yesterday, startDate,'yesterday') // generate stats for the day before
 		runtimeTotalYesterday = (ecobee.currentCompCool1RuntimeYesterday)? ecobee.currentCompCool1RuntimeYesterday.toFloat().round(2):0
 		atomicState?.componentAlreadyProcessed=component
-		if (detailedNotif ) {
-			send "${ecobee} ${component}'s runtime stats for the day before=${runtimeTotalYesterday} minutes for ${String.format('%tF', yesterday)}"
+		if (detailedNotif && runtimeTotalYesterday) {
+			send "And, on ${String.format('%tF', yesterday)}, ${ecobee} ${component}'s runtime stats for the day before=${runtimeTotalYesterday} minutes"
 		}     
 	}     
         
@@ -386,13 +398,13 @@ void generateStats() {
 		generateRuntimeReport(component,startDate, endDate)
 		runtimeTotalDaily = (ecobee.currentCompCool2RuntimeDaily)? ecobee.currentCompCool2RuntimeDaily.toFloat().round(2):0
 		if (runtimeTotalDaily) {
-			send "${ecobee} ${component}'s runtime stats=${runtimeTotalDaily} minutes for ${String.format('%tF', startDate)}", settings.askAlexaFlag
+			send "On ${String.format('%tF', startDate)}, ${ecobee} ${component}'s runtime stats=${runtimeTotalDaily} minutes", settings.askAlexaFlag
 		}     
 		generateRuntimeReport(component,yesterday, startDate,'yesterday') // generate stats for the day before
 		runtimeTotalYesterday = (ecobee.currentCompCool2RuntimeYesterday)? ecobee.currentCompCool2RuntimeYesterday.toFloat().round(2):0
 		atomicState?.componentAlreadyProcessed=component
-		if (detailedNotif ) {
-			send "${ecobee} ${component}'s runtime stats for the day before=${runtimeTotalYesterday} minutes for ${String.format('%tF', yesterday)}"
+		if (detailedNotif && runtimeTotalYesterday ) {
+			send "And, on ${String.format('%tF', yesterday)}, ${ecobee} ${component}'s runtime stats for the day before=${runtimeTotalYesterday} minutes"
 		}     
 	} 
 
@@ -409,7 +421,7 @@ void generateStats() {
 		runtimeTotalDaily = (ecobee.currentHumidifierRuntimeDaily)? ecobee.currentHumidifierRuntimeDaily.toFloat().round(2):0
 		atomicState?.componentAlreadyProcessed=component
 		if (runtimeTotalDaily) {
-			send "${ecobee} ${component}'s runtime stats=${runtimeTotalDaily} minutes for ${String.format('%tF', startDate)}", settings.askAlexaFlag
+			send "On ${String.format('%tF', startDate)}, ${ecobee} ${component}'s runtime stats=${runtimeTotalDaily} minutes", settings.askAlexaFlag
 		}     
     
 	}
@@ -421,7 +433,7 @@ void generateStats() {
 		runtimeTotalDaily = (ecobee.currentDehumidifierRuntimeDaily)? ecobee.currentDehumidifierRuntimeDaily.toFloat().round(2):0
 		atomicState?.componentAlreadyProcessed=component
 		if (runtimeTotalDaily) {
-			send "${ecobee} ${component}'s runtime stats=${runtimeTotalDaily} minutes for ${String.format('%tF', startDate)}", settings.askAlexaFlag
+			send "On ${String.format('%tF', startDate)}, ${ecobee} ${component}'s runtime stats=${runtimeTotalDaily} minutes", settings.askAlexaFlag
 		}     
 
 	}
@@ -432,7 +444,7 @@ void generateStats() {
 		runtimeTotalDaily = (ecobee.currentVentilatorRuntimeDaily)? ecobee.currentVentilatorRuntimeDaily.toFloat().round(2):0
 		atomicState?.componentAlreadyProcessed=component
 		if (runtimeTotalDaily) {
-			send "${ecobee} ${component}'s runtime stats=${runtimeTotalDaily} minutes for ${String.format('%tF', startDate)}", settings.askAlexaFlag
+			send "On ${String.format('%tF', startDate)}, ${ecobee} ${component}'s runtime stats=${runtimeTotalDaily} minutes", settings.askAlexaFlag
 		}     
 
 	}
@@ -443,9 +455,14 @@ void generateStats() {
 
 		generateRuntimeReport(component,startDate, endDate)
 		runtimeTotalDaily = (ecobee.currentFanRuntimeDaily)? ecobee.currentFanRuntimeDaily.toFloat().round(2):0
-		atomicState?.componentAlreadyProcessed=component
 		if (runtimeTotalDaily) {
-			send "${ecobee} ${component}'s runtime stats=${runtimeTotalDaily} minutes for ${String.format('%tF', startDate)}", settings.askAlexaFlag
+			send "On ${String.format('%tF', startDate)},${ecobee} ${component}'s runtime stats=${runtimeTotalDaily} minutes", settings.askAlexaFlag
+		}     
+		generateRuntimeReport(component,yesterday, startDate,'yesterday') // generate stats for the day before
+		runtimeTotalYesterday = (ecobee.currentFanRuntimeYesterday)? ecobee.currentFanRuntimeYesterday.toFloat().round(2):0
+		atomicState?.componentAlreadyProcessed=component
+		if (detailedNotif && runtimeTotalYesterday) {
+			send "And, on ${String.format('%tF', yesterday)}, ${ecobee} ${component}'s runtime stats for the day before=${runtimeTotalYesterday} minutes"
 		}     
 	}     
 
@@ -464,12 +481,10 @@ void generateRuntimeReport(component, startDate, endDate, frequence='daily') {
 
 	if (detailedNotif) {
 		log.debug("${get_APP_NAME()}>For ${ecobee} ${component}, about to call getReportData with endDate in UTC =${endDate.format("yyyy-MM-dd HH:mm:ss", TimeZone.getTimeZone("UTC"))}")
-		send("For ${ecobee} ${component}, about to call getReportData with endDate in UTC =${endDate.format("yyyy-MM-dd HH:mm:ss", TimeZone.getTimeZone("UTC"))}")
 	}        
 	ecobee.getReportData("", startDate, endDate, null, null, component,false)
 	if (detailedNotif) {
 		log.debug("${get_APP_NAME()}>For ${ecobee} ${component}, about to call generateRuntimeReportEvents with endDate in UTC =${endDate.format("yyyy-MM-dd HH:mm:ss", TimeZone.getTimeZone("UTC"))}")
-		send("For ${ecobee} ${component}, about to call generateRuntimeReportEvents with endDate in UTC =${endDate.format("yyyy-MM-dd HH:mm:ss", TimeZone.getTimeZone("UTC"))}")
 	}        
 	ecobee.generateReportRuntimeEvents(component, startDate,endDate, 0, null,frequence)
 
@@ -477,16 +492,23 @@ void generateRuntimeReport(component, startDate, endDate, frequence='daily') {
 
 private send(msg, askAlexa=false) {
 	def message = "${get_APP_NAME()}>${msg}"
-	def sendNotification= (sendPushMessage==null) ?: "No"
-	if (sendNotification == "Yes") {
-		
-		if (askAlexa) {
-			sendLocationEvent(name: "AskAlexaMsgQueue", value: "${get_APP_NAME()}", isStateChange: true, descriptionText: msg)        
-		} else {        
+	if (sendPushMessage == "Yes") {
 			sendPush(message)
-		}            
 	}
-	
+	if (askAlexa) {
+		def expiresInDays=(AskAlexaExpiresInDays)?:2    
+		sendLocationEvent(
+			name: "AskAlexaMsgQueue", 
+			value: "${get_APP_NAME()}", 
+			isStateChange: true, 
+			descriptionText: msg, 
+			data:[
+				queues: listOfMQs,
+				expires: (expiresInDays*24*60*60)  /* Expires after 2 days by default */
+			]
+		)
+	} /* End if Ask Alexa notifications*/
+
 	if (phone) {
 		log.debug("sending text message")
 		sendSms(phone, message)

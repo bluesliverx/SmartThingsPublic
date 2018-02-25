@@ -34,7 +34,7 @@ preferences {
 	page(name: "About", title: "About", install: false , uninstall: true, nextPage: "selectThermostats") {
 		section("About") {
 			paragraph "ecobeeResumeProg, the smartapp that resumes your ecobee's scheduled program when a presence is back home,or when motion is detected or when a ST hello mode is changed"
-			paragraph "Version 2.1.4" 
+			paragraph "Version 2.1.7" 
 			paragraph "If you like this smartapp, please support the developer via PayPal and click on the Paypal link below " 
 				href url: "https://www.paypal.me/ecomatiqhomes",
 					title:"Paypal donation..."
@@ -87,6 +87,12 @@ def selectModes() {
 	}
 }
 
+def appTouch(evt) {
+	log.debug ("appTouch>location.mode= $location.mode, about to takeAction (manual appTouch)")
+
+	takeActions() 
+}
+
 
 def installed() {
 	log.debug "Installed with settings: ${settings}"
@@ -102,7 +108,7 @@ def updated() {
 def initialize() {
 	log.debug "Current mode = ${location.mode}, people = ${people.collect{it.label + ': ' + it.currentPresence}}"
 	subscribe(location, changeMode)
-	subscribe(app, changeMode)
+	subscribe(app, appTouch)
 	subscribe(people, "presence", presence)
 	subscribe(motions, "motion", motionEvtHandler)
 
@@ -110,7 +116,7 @@ def initialize() {
 
 def motionEvtHandler(evt) {
 	if ((evt.value == "active") && residentsHaveJustBeenActive()) {
-		message = "EcobeeResumeProg>Recent motion just detected at home, do it"
+		def message = "EcobeeResumeProg>Recent motion just detected at home, do it"
 		log.info message
 		send(message)
 		takeActions()
@@ -146,46 +152,46 @@ def changeMode(evt) {
 		log.debug "changeMode>location.mode= $location.mode, newMode=${newMode},foundMode=${foundMode}, not resuming program"
 		return			
 	}
+	def message = "EcobeeResumeProg>${newMode} has just been triggered, about to take actions.."
+	log.info message
+	send(message)
 	takeActions()
 }
+
 
 def presence(evt) {
 	log.debug "evt.name: $evt.value"
 	def threshold = (falseAlarmThreshold != null && falseAlarmThreshold != "") ? (falseAlarmThreshold*60*1000) as Long : 3*60*1000L
-	def message = null
+	def message
 
-	if ((location.mode == newMode) || (newMode == null) || (newMode.trim() == '')) {
-		def t0 = new Date(now() - threshold)
-		if (evt.value == "present") {
+	def t0 = new Date(now() - threshold)
+	if (evt.value == "present") {
 
-			def person = getPerson(evt)
-			if (person != null) {
-				def recentNotPresent = person.statesSince("presence", t0).find {
-					it.value == "not present"
-				}
-				if (!recentNotPresent) {
-					message = "EcobeeResumeProg> ${person.displayName} just arrived,take actions.."
-					log.info message
-					send(message)
-					takeActions()
-				}
-			} else {
-				message = "EcobeeResumeProg> Somebody just arrived,take actions.."
+		def person = getPerson(evt)
+		if (person != null) {
+			def recentNotPresent = person.statesSince("presence", t0).find {
+				it.value == "not present"
+			}
+			if (!recentNotPresent) {
+				message = "EcobeeResumeProg>${person.displayName} just arrived,take actions.."
 				log.info message
 				send(message)
 				takeActions()
-
 			}
-		}
-	} else {
-		log.debug "mode is not the same, not evaluating"
-	}
+		} else {
+			message = "EcobeeResumeProg>somebody just arrived at home, but she/he is not been selected for resuming the ecobee program."
+			log.info message
+			send(message)
 
+		}
+	}
 }
 
 def takeActions() {
-	def message = "EcobeeResumeProg>resumed program at ecobee..."
-	ecobee.resumeThisTstat()
+	def message = "EcobeeResumeProg>resumed program at ${ecobee} thermostats..."
+	ecobee.each {
+		it.resumeThisTstat()
+	}        
 	send(message)
 }
 

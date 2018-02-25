@@ -34,15 +34,14 @@ definition(
 
 preferences {
 
-	page(name: "dashboardPage", title: "Dashboard")
+	page(name: "dashboardPage", title: "Dashboard")
 	page(name: "tempSensorSettings", title: "tempSensorSettings")
 	page(name: "motionSensorSettings", title: "motionSensorSettings")
 	page(name: "thresholdSettings", title: "ThresholdSettings")
 	page(name: "otherSettings", title: "OtherSettings")
 }
 
-
-
+def get_APP_VERSION() { return "3.4.9e"}
 
 def dashboardPage() {
 	dynamicPage(name: "dashboardPage", title: "MonitorAndSetEcobeeTemp-Dashboard", uninstall: true, nextPage: tempSensorSettings,submitOnChange: true) {
@@ -104,7 +103,7 @@ def dashboardPage() {
 		}            
 		section("About") {	
 			paragraph "MonitorAndSetEcobeeTemp,the smartapp that adjusts your programmed ecobee's setpoints based on indoor/outdoor sensors"
-			paragraph "Version 3.4.1" 
+			paragraph "Version ${get_APP_VERSION()}" 
 			paragraph "If you like this smartapp, please support the developer via PayPal and click on the Paypal link below " 
 				href url: "https://www.paypal.me/ecomatiqhomes",
 					title:"Paypal donation..."
@@ -120,7 +119,7 @@ def tempSensorSettings() {
 			input "indoorSensors", "capability.motionSensor", title: "Which Indoor Motion/Temperature Sensor(s)", required: false, multiple:true
 		}		
 		section("Choose any other indoor temp sensors for avg temp adjustment [optional]") {
-			input "tempSensors", "capability.temperatureMeasurement", title: "Any other temp sensors?",  multiple: true, required: false
+			input "tempSensors", "capability.temperatureMeasurement", title: "Any other temp sensors with single capability (not temp/motion)",  multiple: true, required: false
 			
 		}
 		section {
@@ -137,7 +136,7 @@ def motionSensorSettings() {
 			input (name:"setAwayOrPresentFlag", title: "Set Main thermostat to [Away,Present]?", type:"bool",required:false)
 		}
 		section("Choose additional indoor motion sensors for setting ecobee climate to [Away, Home] [optional]") {
-			input "motions", "capability.motionSensor", title: "Any other motion sensors?",  multiple: true, required: false
+			input "motions", "capability.motionSensor", title: "Any other motion sensors with single capability (not temp/motion)",  multiple: true, required: false
 		}
 		section("Trigger climate/temp adjustment when motion or no motion has been detected for [default=15 minutes]") {	
 			input "residentsQuietThreshold", "number", title: "Time in minutes", required: false
@@ -184,13 +183,16 @@ def otherSettings() {
 				false
 			input "phoneNumber", "phone", title: "Send a text message?", required: false
 		}
-		section("Detailed Notifications") {
-			input "detailedNotif", "bool", title: "Detailed Notifications?", required:
+		section("Detailed Logging/Notifications") {
+			input "detailedNotif", "bool", title: "Detailed Logging/Notifications?", required:
 				false
 		}
-		section("Enable Amazon Echo/Ask Alexa Notifications [optional, default=false]") {
-			input (name:"askAlexaFlag", title: "Ask Alexa verbal Notifications?", type:"bool",
+		section("Enable Amazon Echo/Ask Alexa Notifications for events logging (optional)") {
+			input (name:"askAlexaFlag", title: "Ask Alexa verbal Notifications [default=false]?", type:"bool",
 				description:"optional",required:false)
+			input (name:"listOfMQs",  type:"enum", title: "List of the Ask Alexa Message Queues (default=Primary)", options: state?.askAlexaMQ, multiple: true, required: false,
+				description:"optional")            
+			input "AskAlexaExpiresInDays", "number", title: "Ask Alexa's messages expiration in days (optional,default=2 days)?", required: false
 		}        
 		section([mobileOnly:true]) {
 			label title: "Assign a name for this SmartApp", required: false
@@ -242,6 +244,8 @@ def initialize() {
 	subscribe(ecobee, "programCoolTemp", programCoolEvtHandler)
 	subscribe(ecobee, "setClimate", setClimateEvtHandler)
 	subscribe(ecobee, "thermostatMode", changeModeHandler)
+	subscribe(location, "askAlexaMQ", askAlexaMQHandler)    
+    
 
 	if (powerSwitch) {
 		subscribe(powerSwitch, "switch.off", offHandler, [filterEvents: false])
@@ -250,7 +254,7 @@ def initialize() {
 	if (detailedNotif) {    
 		log.debug("initialize state=$state")	
 	}    	
-	// Resume program every time a install/update is done to remote any holds at thermostat (reset).
+	// Resume program every time a install/update is done to remove any holds at thermostat (reset).
     
 	ecobee.resumeThisTstat()
     
@@ -265,6 +269,16 @@ def initialize() {
 	subscribe(location, "sunriseTime", rescheduleIfNeeded)
 	subscribe(location, "sunsetTime", rescheduleIfNeeded)
 	rescheduleIfNeeded()   
+}
+
+def askAlexaMQHandler(evt) {
+	if (!evt) return
+	switch (evt.value) {
+		case "refresh":
+		state?.askAlexaMQ = evt.jsonData && evt.jsonData?.queues ? evt.jsonData.queues : []
+		log.debug ("askAlexaMQHandler>new refresh value=$evt.jsonData?.queues")
+		break
+	}
 }
 
 
@@ -301,10 +315,6 @@ def appTouch(evt) {
 	monitorAdjustTemp()
 }
 
-private def sendNotifDelayNotInRange() {
-
-	send "scheduling delay (${givenInterval} min.) not in range, please restart..."    
-}
 
 def setClimateEvtHandler(evt) {
 	log.debug "SetClimateEvtHandler>$evt.name: $evt.value"
@@ -371,13 +381,26 @@ private residentsHaveBeenQuiet() {
 	def threshold = residentsQuietThreshold ?: 15   // By default, the delay is 15 minutes
 	def t0 = new Date(now() - (threshold * 60 *1000))
 	for (sensor in motions) {
+/* Removed the refresh following some ST platform changes which cause "offline" issues to some temp/motion sensors.
+
+		if (sensor.hasCapability("Refresh"))  { // to get the latest motion values
+			sensor.refresh()
+		}	            
+*/        
 		def recentStates = sensor.statesSince("motion", t0)
 		if (recentStates.find{it.value == "active"}) {
 			log.debug "residentsHaveBeenQuiet: false, found motion at $sensor"
 			return false
 		}	
 	}
+    
+    
 	for (sensor in indoorSensors) {
+/* Removed the refresh following some ST platform changes which cause "offline" issues to some temp/motion sensors.
+		if (sensor.hasCapability("Refresh"))  { // to get the latest motion values
+			sensor.refresh()
+		}	            
+*/        
 		def recentStates = sensor.statesSince("motion", t0)
 		if (recentStates.find{it.value == "active"}) {
 			log.debug "residentsHaveBeenQuiet: false, found motion at $sensor"
@@ -424,7 +447,7 @@ def monitorAdjustTemp() {
     
 	if (powerSwitch?.currentSwitch == "off") {
 		if (detailedNotif) {
-			send("Virtual master switch ${powerSwitch.name} is off, processing on hold...")
+			send("Virtual master switch ${powerSwitch.name} is off, processing on hold...",askAlexaFlag)
 		}
 		return
 	}
@@ -458,6 +481,9 @@ def monitorAdjustTemp() {
 		log.error msg
 		return        
 	}
+    
+/* Removed the refresh following some ST platform changes which cause "offline" issues to some temp/motion sensors.
+    
 	if ((outdoorSensor) && (outdoorSensor.hasCapability("Refresh"))) {
     
 		try {    
@@ -466,7 +492,7 @@ def monitorAdjustTemp() {
 			log.debug("not able to refresh ${outdoorSensor}'s temp value")
 		}    	
 	}   	 
-    
+*/    
 	String currentProgType = ecobee.currentProgramType
 	log.trace("program Type= ${currentProgType}")
 	if (currentProgType.toUpperCase().contains("HOLD")) { 						
@@ -489,7 +515,7 @@ private def reset_state_program_values() {
 
 private def reset_state_tempSensors() {
 
-	state.tempSensors=[]	
+	state?.tempSensors=[]	
 	settings.tempSensors.each {
 // 	By default, the 'static' temp Sensors are the ones used for temp avg calculation
 //	Other 'occupied' sensors may be added dynamically when needed 
@@ -499,7 +525,7 @@ private def reset_state_tempSensors() {
 }
 
 private def reset_state_motions() {
-	state.motions=[]
+	state?.motions=[]
 	if (settings.motions) {
 		settings.motions.each {
 			state.motions.add(it.device.id)        
@@ -523,10 +549,13 @@ private void addAllTempsForAverage(indoorTemps) {
 		if (sensor != null) {
 			if (detailedNotif) {        
 				log.debug "addAllTempsForAverage>found sensor $sensor in $tempSensors"
-			}                
+			} 
+/* Removed the refresh following some ST platform changes which cause "offline" issues to some temp/motion sensors.
+            
 			if (sensor.hasCapability("Refresh")) {
 				sensor.refresh()            
 			}                
+*/            
 			def currentTemp =sensor.currentTemperature
 			if (currentTemp != null) {            
 				indoorTemps.add(currentTemp) // Add indoor temp to calculate the average based on all sensors
@@ -595,9 +624,12 @@ private def check_if_hold_needed() {
 			log.trace("check_if_hold_needed>some occupied indoor Sensors added for avg calculation")
 		}
 	}
-	def indoorTemps = [ecobeeTemp]
-	addAllTempsForAverage(indoorTemps)        
-	float avg_indoor_temp = (indoorTemps.sum() / indoorTemps.size()).round(1) // this is the avg indoor temp based on indoor sensors
+	def indoorTemps = []
+	addAllTempsForAverage(indoorTemps)
+	if (indoorTemps == []) {
+		indoorTemps.add(ecobeeTemp)    
+	}    
+	float avg_indoor_temp = (indoorTemps.sum() / indoorTemps.size()).toFloat().round(1) // this is the avg indoor temp based on indoor sensors
 	if (detailedNotif) {
 		log.trace "check_if_hold_needed> location.mode = $location.mode"
 		log.trace "check_if_hold_needed> ecobee Mode = $ecobeeMode"
@@ -617,10 +649,13 @@ private def check_if_hold_needed() {
 	float targetTstatTemp
 
 	if (detailedNotif) {
+		log.debug("needs Hold? currentProgName ${currentProgName},indoorTemp ${ecobeeTemp}°,progHeatSetPoint ${programHeatTemp}°,progCoolSetPoint ${programCoolTemp}°")
+		log.debug("needs Hold? currentProgName ${currentProgName},indoorTemp ${ecobeeTemp}°,heatingSetPoint ${heatTemp}°,coolingSetPoint ${coolTemp}°")
 		send("needs Hold? currentProgName ${currentProgName},indoorTemp ${ecobeeTemp}°,progHeatSetPoint ${programHeatTemp}°,progCoolSetPoint ${programCoolTemp}°")
 		send("needs Hold? currentProgName ${currentProgName},indoorTemp ${ecobeeTemp}°,heatingSetPoint ${heatTemp}°,coolingSetPoint ${coolTemp}°")
 		if (state.programHoldSet!= "") {
-			send("Hold ${state.programHoldSet} has been set")
+			send("Hold ${state.programHoldSet} has been set", askAlexaFlag)
+			log.info("Hold ${state.programHoldSet} has been set")
 		}
 	}
 	reset_state_motions()
@@ -628,14 +663,14 @@ private def check_if_hold_needed() {
 	if ((setAwayOrPresent) && (state.motions != [])) {  // the following logic is done only if motion sensors are provided as input parameters
   
   		boolean residentAway=residentsHaveBeenQuiet()
-		if ((!currentProgName.toUpperCase().contains('AWAY')) && (!residentAway)) {
+		if ((currentProgName.toUpperCase().contains('AWAY')) && (!residentAway)) {
 
 			ecobee.present()            
-			send("Program now set to Home, motion detected")
+			send("Program now set to Home, motion detected", askAlexaFlag)
  			state.programSetTime = now()
  			state.programSetTimestamp = new Date().format("yyyy-MM-dd HH:mm", location.timeZone)
  			state.programHoldSet = 'Home'
-			log.debug "Program now set to Home at ${state.programSetTimestamp}, motion detected"
+			log.info "Program now set to Home at ${state.programSetTimestamp}, motion detected"
 		 	/* Get latest heat and cool setting points after climate adjustment */
 			programHeatTemp = ecobee.currentHeatingSetpoint.toFloat() // This is the heat temp associated to the current program
 			programCoolTemp = ecobee.currentCoolingSetpoint.toFloat() // This is the cool temp associated to the current program
@@ -645,7 +680,8 @@ private def check_if_hold_needed() {
 			// Do not adjust the program when ecobee mode = Sleep or Away    
                 
 			ecobee.away()          
-			send("Program now set to Away,no motion detected")
+			log.info("Program now set to Away,no motion detected")
+			send("Program now set to Away,no motion detected", askAlexaFlag)
  			state.programSetTime = now()
  			state.programSetTimestamp = new Date().format("yyyy-MM-dd HH:mm", location.timeZone)
  			state.programHoldSet = 'Away'        
@@ -657,15 +693,8 @@ private def check_if_hold_needed() {
 		}
 	} /* end if state.motions */
     
-	if ((location.mode.toUpperCase().contains('AWAY')) || (currentProgName.toUpperCase()=='SLEEP')) { 
     
-    	// Do not adjust cooling or heating settings if ST mode == Away or Program Schedule at ecobee == SLEEP
-        
-		log.debug "ST mode is $location.mode, current program is $currentProgName, no adjustment required, exiting..."
-		return            
-	}   
-    
-	if (ecobeeMode == 'cool') {
+	if (ecobeeMode in ['cool','auto']) {
 		if (outdoorSensor) {    	
 			Integer outdoorHumidity = outdoorSensor.currentHumidity
 			float outdoorTemp = outdoorSensor.currentTemperature.toFloat()
@@ -687,7 +716,7 @@ private def check_if_hold_needed() {
 			if (outdoorTemp >= more_cool_threshold) {
 				targetTstatTemp = (programCoolTemp - max_temp_diff).round(1)
 				ecobee.setCoolingSetpoint(targetTstatTemp)
-				send("cooling setPoint now =${targetTstatTemp}°,outdoorTemp >=${more_cool_threshold}°")
+				send("cooling setPoint now =${targetTstatTemp}°,outdoorTemp >=${more_cool_threshold}°",askAlexaFlag)
 			} else if (outdoorHumidity >= humidity_threshold) {
 				def extremes = [less_cool_threshold, more_cool_threshold]
 				float median_temp = (extremes.sum() / extremes.size()).round(1) // Increase cooling settings based on median temp
@@ -698,33 +727,37 @@ private def check_if_hold_needed() {
 				if (outdoorTemp > median_temp) { // Only increase cooling settings when outdoorTemp > median_temp
 					targetTstatTemp = (programCoolTemp - max_temp_diff).round(1)
 					ecobee.setCoolingSetpoint(targetTstatTemp)
-					send("cooling setPoint now=${targetTstatTemp}°, outdoorHum >=${humidity_threshold}%")
+					send("cooling now=${targetTstatTemp}°, outdoorHum >=${humidity_threshold}%", askAlexaFlag)
+					log.info("cooling setPoint now=${targetTstatTemp}°, outdoorHum >=${humidity_threshold}%")
 				}
 			}                
 			if (detailedNotif) {
-				send("evaluate: lessCoolThreshold ${less_cool_threshold}° vs. outdoorTemp ${outdoorTemp}°")
+				send("evaluate: lessCoolThreshold ${less_cool_threshold}° vs. outdoorTemp ${outdoorTemp}°", askAlexaFlag)
 				log.trace("check_if_hold_needed>evaluate: lessCoolThreshold= ${less_cool_threshold} vs.outdoorTemp ${outdoorTemp}°")
 			}
 			if (outdoorTemp <= less_cool_threshold) {
 				targetTstatTemp = (programCoolTemp + max_temp_diff).round(1)
 				ecobee.setCoolingSetpoint(targetTstatTemp)
+				log.info "cooling setPoint now=${targetTstatTemp}°, outdoor temp <=${less_cool_threshold}°"
 				send(
-					"cooling setPoint now=${targetTstatTemp}°, outdoor temp <=${less_cool_threshold}°"
+					"cooling setPoint now=${targetTstatTemp}°, outdoor temp <=${less_cool_threshold}°", askAlexaFlag
 				)
 			}
 		} /* end if outdoorSensor */ 
 
-		if ((state.tempSensors) && (avg_indoor_temp > coolTemp)) {
-			temp_diff = (ecobee_temp - avg_indoor_temp).round(1) // adjust the coolingSetPoint at the ecobee tstat according to the avg indoor temp measured
+		if (state.tempSensors) {
+			temp_diff = (ecobeeTemp - avg_indoor_temp).round(1) // adjust the coolingSetPoint at the ecobee tstat according to the avg indoor temp measured
                 
-			temp_diff = (temp_diff <0-max_temp_diff)?max_temp_diff:(temp_diff >max_temp_diff)?max_temp_diff:temp_diff // determine the temp_diff based on max_temp_diff
-			targetTstatTemp = (programCoolTemp - temp_diff).round(1)
+			temp_diff = (temp_diff <0-max_temp_diff)? (-max_temp_diff):(temp_diff >max_temp_diff)?max_temp_diff:temp_diff // determine the temp_diff based on max_temp_diff
+			targetTstatTemp = (programCoolTemp + temp_diff).round(1)
 			if (temp_diff.abs() > MIN_TEMP_DIFF) {  // adust the temp only if temp diff is significant
 				ecobee.setCoolingSetpoint(targetTstatTemp)
-				send("cooling setPoint now =${targetTstatTemp}°,adjusted by temp diff (${temp_diff}°) between sensors")
+				log.info("cooling setPoint now =${targetTstatTemp}°,adjusted by temp diff (${temp_diff}°) between sensors")
+				send("cooling setPoint now =${targetTstatTemp}°,adjusted by temp diff (${temp_diff}°) between sensors", askAlexaFlag)
 			}   
 		}                
-	} else if (ecobeeMode in ['heat', 'emergency heat']) {
+	}                
+	if (ecobeeMode in ['heat', 'emergency heat', 'auto']) {
 		if (outdoorSensor) {    	
 			Integer outdoorHumidity = outdoorSensor.currentHumidity
 			float outdoorTemp = outdoorSensor.currentTemperature.toFloat()
@@ -745,37 +778,42 @@ private def check_if_hold_needed() {
 				targetTstatTemp = (programHeatTemp + max_temp_diff).round(1)
 				ecobee.setHeatingSetpoint(targetTstatTemp)
 				send(
-					"heating setPoint now= ${targetTstatTemp}°, outdoorTemp <=${more_heat_threshold}°")
+					"heating setPoint now= ${targetTstatTemp}°, outdoorTemp <=${more_heat_threshold}°", askAlexaFlag)
+				log.info "heating setPoint now= ${targetTstatTemp}°, outdoorTemp <=${more_heat_threshold}°"
 			} else if (outdoorHumidity >= humidity_threshold) {
 				def extremes = [less_heat_threshold, more_heat_threshold]
 				float median_temp = (extremes.sum() / extremes.size()).round(1) // Increase heating settings based on median temp
 				if (detailedNotif) {
 					String medianTempFormat = String.format('%2.1f', median_temp)
-					send("eval: heat median temp ${medianTempFormat}° vs.outdoorTemp ${outdoorTemp}°")
+					send("eval: heat median temp ${medianTempFormat}° vs.outdoorTemp ${outdoorTemp}°",askAlexaFlag)
+					log.trace("eval: heat median temp ${medianTempFormat}° vs.outdoorTemp ${outdoorTemp}°")
 				}
 				if (outdoorTemp < median_temp) { // Only increase heating settings when outdoorTemp < median_temp
 					targetTstatTemp = (programHeatTemp + max_temp_diff).round(1)
 					ecobee.setHeatingSetpoint(targetTstatTemp)
-					send("heating setPoint now=${targetTstatTemp}°, outdoorHum >=${humidity_threshold}%")
+					send("heating setPoint now=${targetTstatTemp}°, outdoorHum >=${humidity_threshold}%",askAlexaFlag)
+					log.info("heating setPoint now=${targetTstatTemp}°, outdoorHum >=${humidity_threshold}%")
 				}
 			}                
 			if (detailedNotif) {
 				log.trace("eval:lessHeatThreshold=${less_heat_threshold}° vs.outdoorTemp ${outdoorTemp}°")
-				send("eval:  lessHeatThreshold ${less_heat_threshold}° vs.outdoorTemp ${outdoorTemp}°")
+				send("eval:  lessHeatThreshold ${less_heat_threshold}° vs.outdoorTemp ${outdoorTemp}°",askAlexaFlag)
 			}
 			if (outdoorTemp >= less_heat_threshold) {
 				targetTstatTemp = (programHeatTemp - max_temp_diff).round(1)
 				ecobee.setHeatingSetpoint(targetTstatTemp)
-				send("heating setPoint now=${targetTstatTemp}°,outdoor temp>= ${less_heat_threshold}°")
+				send("heating setPoint now=${targetTstatTemp}°,outdoor temp>= ${less_heat_threshold}°",askAlexaFlag)
+				log.info("heating setPoint now=${targetTstatTemp}°,outdoor temp>= ${less_heat_threshold}°")
 			}
 		} /* if outdoorSensor */
-		if ((state.tempSensors) && (avg_indoor_temp < heatTemp)) {
+		if (state.tempSensors) {
 			temp_diff = (ecobeeTemp - avg_indoor_temp).round(1) // adjust the heatingSetPoint at the tstat according to the avg indoor temp measur
-			temp_diff = (temp_diff <0-max_temp_diff)?max_temp_diff:(temp_diff >max_temp_diff)?max_temp_diff:temp_diff // determine the temp_diff based on max_temp_diff
+			temp_diff = (temp_diff <0-max_temp_diff)?(-max_temp_diff):(temp_diff >max_temp_diff)?max_temp_diff:temp_diff // determine the temp_diff based on max_temp_diff
 			targetTstatTemp = (programHeatTemp + temp_diff).round(1)
 			if (temp_diff.abs() > MIN_TEMP_DIFF) {  // adust the temp only if temp diff is significant
 				ecobee.setHeatingSetpoint(targetTstatTemp)
-				send("heating setPoint now =${targetTstatTemp}°,adjusted by temp diff (${temp_diff}°) between sensors")
+				send("heating setPoint now =${targetTstatTemp}°,adjusted by temp diff (${temp_diff}°) between sensors",askAlexaFlag)
+				log.info("heating setPoint now =${targetTstatTemp}°,adjusted by temp diff (${temp_diff}°) between sensors")
 			}                
 		}                
 	}  /* end if heat mode */
@@ -820,10 +858,14 @@ private def check_if_hold_justified() {
 		log.trace("check_if_hold_justified>some occupied indoor Sensors added for avg calculation")
 	}
     
-	def indoorTemps = [ecobeeTemp]
+	def indoorTemps = []
+    
 	addAllTempsForAverage(indoorTemps)
+	if (indoorTemps==[]) {
+		indoorTemps.add(ecobeeTemp)
+	}
 	log.trace("check_if_hold_justified> temps count=${indoorTemps.size()}")
-	float avg_indoor_temp = (indoorTemps.sum() / indoorTemps.size()).round(1) // this is the avg indoor temp based on indoor sensors
+	float avg_indoor_temp = (indoorTemps.sum() / indoorTemps.size()).toFloat().round(1) // this is the avg indoor temp based on indoor sensors
 
 	String ecobeeMode = ecobee.currentThermostatMode.toString()
 	if (detailedNotif) {    
@@ -843,9 +885,11 @@ private def check_if_hold_justified() {
 		log.trace "check_if_hold_justified>state=${state}"
 		send("Hold justified? currentProgName ${currentProgName},indoorTemp ${ecobeeTemp}°,progHeatSetPoint ${programHeatTemp}°,progCoolSetPoint ${programCoolTemp}°")
 		send("Hold justified? currentProgName ${currentProgName},indoorTemp ${ecobeeTemp}°,heatingSetPoint ${heatTemp}°,coolingSetPoint ${coolTemp}°")
+		log.trace("Hold justified? currentProgName ${currentProgName},indoorTemp ${ecobeeTemp}°,progHeatSetPoint ${programHeatTemp}°,progCoolSetPoint ${programCoolTemp}°")
+		log.trace("Hold justified? currentProgName ${currentProgName},indoorTemp ${ecobeeTemp}°,heatingSetPoint ${heatTemp}°,coolingSetPoint ${coolTemp}°")
 		if (state?.programHoldSet!= null && state?.programHoldSet!= "") {
         
-			send("Hold ${state.programHoldSet} has been set")
+			send("Hold ${state.programHoldSet} has been set", askAlexaFlag)
 		}
 	}
 	reset_state_motions()
@@ -854,9 +898,9 @@ private def check_if_hold_justified() {
   		boolean residentAway=residentsHaveBeenQuiet()
 		if ((currentSetClimate.toUpperCase()=='AWAY') && (!residentAway)) {
 			if ((state?.programHoldSet == 'Away') && (!currentProgName.toUpperCase().contains('AWAY'))) {       
-				log.trace("check_if_hold_justified>it's not been quiet since ${state.programSetTimestamp},resumed ${currentProgName} program")
+				log.info("check_if_hold_justified>it's not been quiet since ${state.programSetTimestamp},resumed ${currentProgName} program")
 				ecobee.resumeThisTstat()
-				send("resumed ${currentProgName} program, motion detected")
+				send("resumed ${currentProgName} program, motion detected",askAlexaFlag)
 				reset_state_program_values()
 				check_if_hold_needed()   // check if another type of hold is now needed (ex. 'Home' hold or more heat because of outside temp ) 
 				return // no more adjustments
@@ -869,20 +913,21 @@ private def check_if_hold_justified() {
 				ecobee.resumeThisTstat()
 				reset_state_program_values()
 				if (detailedNotif) {
-					send("'Away' hold no longer needed, resumed ${currentProgName} program ")
+					send("'Away' hold no longer needed, resumed ${currentProgName} program ",askAlexaFlag)
+					log.info("'Away' hold no longer needed, resumed ${currentProgName} program")
 				}
 			} else if (state?.programHoldSet == 'Away') {
 				log.trace("check_if_hold_justified>quiet since ${state.programSetTimestamp}, current program= ${currentProgName},'Away' hold justified")
-				send("quiet since ${state.programSetTimestamp}, current program= ${currentProgName}, 'Away' hold justified")
+				send("quiet since ${state.programSetTimestamp}, current program= ${currentProgName}, 'Away' hold justified", askAlexaFlag)
 				ecobee.away()
 				return // hold justified, no more adjustments
 			}    
 		}
 		if ((currentSetClimate.toUpperCase()=='HOME') && (residentAway)) {
 			if ((state?.programHoldSet == 'Home') && (currentProgName.toUpperCase().contains('AWAY'))) {       
-				log.trace("check_if_hold_justified>it's been quiet since ${state.programSetTimestamp},resume program...")
+				log.info("check_if_hold_justified>it's been quiet since ${state.programSetTimestamp},resume program...")
 				ecobee.resumeThisTstat()
-				send("it's been quiet since ${state.programSetTimestamp}, resumed ${currentProgName} program")
+				send("it's been quiet since ${state.programSetTimestamp}, resumed ${currentProgName} program", askAlexaFlag)
 				reset_state_program_values()
 				check_if_hold_needed()   // check if another type of hold is now needed (ex. 'Away' hold or more heat b/c of low outdoor temp ) 
 				return // no more adjustments
@@ -894,14 +939,15 @@ private def check_if_hold_justified() {
 				ecobee.resumeThisTstat()
 				reset_state_program_values()
 				if (detailedNotif) {
-					send("'Away' hold no longer needed,resumed ${currentProgName} program")
+					send("'Away' hold no longer needed,resumed ${currentProgName} program", askAlexaFlag)
+					log.info("'Away' hold no longer needed,resumed ${currentProgName} program")
 				}
  				check_if_hold_needed()   // check if another type of hold is now needed (ex. more heat b/c of low outdoor temp ) 
 				return
 			} else if (state?.programHoldSet == 'Home') {
-				log.trace("not quiet since ${state.programSetTimestamp}, current program= ${currentProgName}, 'Home' hold justified")
+				log.info("not quiet since ${state.programSetTimestamp}, current program= ${currentProgName}, 'Home' hold justified")
 				if (detailedNotif) {
-					send("not quiet since ${state.programSetTimestamp}, current program= ${currentProgName}, 'Home' hold justified")
+					send("not quiet since ${state.programSetTimestamp}, current program= ${currentProgName}, 'Home' hold justified",askAlexaFlag)
 				}
 				ecobee.present()
                 
@@ -910,7 +956,7 @@ private def check_if_hold_justified() {
 		}            
 	}   // end if motions
     
-	if (ecobeeMode == 'cool') {
+	if (ecobeeMode in ['cool','auto']) {
 		if (outdoorSensor) {    	
 			Integer outdoorHumidity = outdoorSensor.currentHumidity
 			float outdoorTemp = outdoorSensor.currentTemperature.toFloat()
@@ -932,30 +978,34 @@ private def check_if_hold_justified() {
 			}
 			if ((outdoorTemp > less_cool_threshold) && (outdoorTemp < more_cool_threshold) &&
 				(outdoorHumidity < humidity_threshold)) {
-				send("resuming program, ${less_cool_threshold}° < outdoorTemp <${more_cool_threshold}°")
+				send("resuming program, ${less_cool_threshold}° < outdoorTemp <${more_cool_threshold}°",askAlexaFlag)
 				ecobee.resumeThisTstat()
 			} else {
 				if (detailedNotif) {
-					send("Hold justified, cooling setPoint=${coolTemp}°")
+					send("Hold justified, cooling setPoint=${coolTemp}°",askAlexaFlag)
+					log.info("Hold justified, cooling setPoint=${coolTemp}°")
 				}
 				float actual_temp_diff = (programCoolTemp - coolTemp).round(1).abs()
 				if (detailedNotif) {
 					send("eval: actual_temp_diff ${actual_temp_diff}° vs. Max temp diff ${max_temp_diff}°")
+					log.trace("eval: actual_temp_diff ${actual_temp_diff}° vs. Max temp diff ${max_temp_diff}°")
 				}
 				if ((actual_temp_diff > max_temp_diff) && (!state?.programHoldSet)) {
 					if (detailedNotif) {
-						send("Hold differential too big (${actual_temp_diff}), needs adjustment")
+						send("Hold differential too big (${actual_temp_diff}), needs adjustment",askAlexaFlag)
+						log.trace("Hold differential too big (${actual_temp_diff}), needs adjustment")
 					}
 					check_if_hold_needed() // call it to adjust cool temp
 				}
 			}                
 		} /* if outdoorSensor */
 		if ((state.tempSensors != []) && (avg_indoor_temp > coolTemp)) {
-			send("Hold justified, avgIndoorTemp ($avg_indoor_temp°) > coolingSetpoint (${coolTemp}°)")
+			send("Hold justified, avgIndoorTemp ($avg_indoor_temp°) > coolingSetpoint (${coolTemp}°)",askAlexaFlag)
+			log.info("Hold justified, avgIndoorTemp ($avg_indoor_temp°) > coolingSetpoint (${coolTemp}°)")
 			return
 		}   
-        
-	} else if (ecobeeMode in ['heat', 'emergency heat']) {
+	}        
+	if (ecobeeMode in ['heat', 'emergency heat', 'auto']) {
 		if (outdoorSensor) {    	
 			Integer outdoorHumidity = outdoorSensor.currentHumidity
 			float outdoorTemp = outdoorSensor.currentTemperature.toFloat()
@@ -976,19 +1026,23 @@ private def check_if_hold_justified() {
 			}
 			if ((outdoorTemp > more_heat_threshold) && (outdoorTemp < less_heat_threshold) && 
 				(outdoorHumidity < humidity_threshold)) {
-				send("resuming program, ${less_heat_threshold}° < outdoorTemp > ${more_heat_threshold}°")
+				send("resuming program, ${less_heat_threshold}° < outdoorTemp > ${more_heat_threshold}°",askAlexaFlag)
+				log.trace("resuming program, ${less_heat_threshold}° < outdoorTemp > ${more_heat_threshold}°")
 				ecobee.resumeThisTstat()
 			} else {
 				if (detailedNotif) {
-					send("Hold justified, heating setPoint=${heatTemp}°")
+					send("Hold justified, heating setPoint=${heatTemp}°", askAlexaFlag)
+					log.info("Hold justified, heating setPoint=${heatTemp}°")
 				}
 				float actual_temp_diff = (heatTemp - programHeatTemp).round(1).abs()
 				if (detailedNotif) {
 					send("eval: actualTempDiff ${actual_temp_diff}° vs. Max temp Diff ${max_temp_diff}°")
+					log.trace("eval: actualTempDiff ${actual_temp_diff}° vs. Max temp Diff ${max_temp_diff}°")
 				}
 				if ((actual_temp_diff > max_temp_diff) && (!state?.programHoldSet)) {
 					if (detailedNotif) {
-						send("Hold differential too big ${actual_temp_diff}, needs adjustment")
+						send("Hold differential too big ${actual_temp_diff}, needs adjustment", askAlexaFlag)
+						log.info("Hold differential too big ${actual_temp_diff}, needs adjustment")
 					}
 					check_if_hold_needed() // call it to adjust heat temp
 				}
@@ -996,7 +1050,8 @@ private def check_if_hold_justified() {
 		} /* end if outdoorSensor*/
         
 		if ((state.tempSensors != []) && (avg_indoor_temp < heatTemp)) {
-			send("Hold justified, avgIndoorTemp ($avg_indoor_temp°) < heatingSetpoint (${heatTemp}°)")
+			send("Hold justified, avgIndoorTemp ($avg_indoor_temp°) < heatingSetpoint (${heatTemp}°)", askAlexaFlag)
+			log.info("Hold justified, avgIndoorTemp ($avg_indoor_temp°) < heatingSetpoint (${heatTemp}°)")
 			return
 		}                
 	} /* end if heat mode */
@@ -1020,17 +1075,27 @@ int MAX_EXCEPTION_MSG_SEND=5
 	}    
 	def message = "${get_APP_NAME()}>${msg}"
 
-	if (sendPushMessage != "No") {
+	if (sendPushMessage == "Yes") {
 		if (location.contactBookEnabled && recipients) {
 			log.debug "contact book enabled"
 			sendNotificationToContacts(message, recipients)
-    	} else {
+		} else {
 			sendPush(message)
 		}            
 	}
 	if (askAlexa) {
-		sendLocationEvent(name: "AskAlexaMsgQueue", value: "${get_APP_NAME()}", isStateChange: true, descriptionText: msg)        
-	}        
+		def expiresInDays=(AskAlexaExpiresInDays)?:2    
+		sendLocationEvent(
+			name: "AskAlexaMsgQueue", 
+			value: "${get_APP_NAME()}", 
+			isStateChange: true, 
+			descriptionText: msg, 
+			data:[
+				queues: listOfMQs,
+		        expires: (expiresInDays*24*60*60)  /* Expires after 2 days by default */
+		    ]
+		)
+	} /* End if Ask Alexa notifications*/
 	
 	if (phoneNumber) {
 		log.debug("sending text message")
@@ -1058,4 +1123,4 @@ def getImagePath() {
 
 def get_APP_NAME() {
 	return "MonitorAndSetEcobeeTemp"
-}
+} 
